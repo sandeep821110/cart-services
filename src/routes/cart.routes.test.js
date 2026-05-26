@@ -1,20 +1,4 @@
-import { jest } from '@jest/globals';
-
-const mockGet = jest.fn();
-const mockPost = jest.fn();
-const mockPut = jest.fn();
-const mockDelete = jest.fn();
-
-jest.unstable_mockModule('express', () => ({
-  default: {
-    Router: () => ({
-        get: mockGet,
-        post: mockPost,
-        put: mockPut,
-        delete: mockDelete,
-    }),
-  },
-}));
+import { jest } from "@jest/globals";
 
 const mockAddToCart = jest.fn();
 const mockGetCart = jest.fn();
@@ -22,48 +6,89 @@ const mockClearCart = jest.fn();
 const mockRemoveItem = jest.fn();
 const mockUpdateQuantity = jest.fn();
 const mockGetCartById = jest.fn();
+const mockBuyNow = jest.fn();
 
-jest.unstable_mockModule('../controllers/cart.controller.js', () => ({
-    addToCart: mockAddToCart,
-    getCart: mockGetCart,
-    clearCart: mockClearCart,
-    removeItem: mockRemoveItem,
-    updateQuantity: mockUpdateQuantity,
-    getCartById: mockGetCartById,
+jest.unstable_mockModule("../controllers/cart.controller.js", () => ({
+  addToCart: mockAddToCart,
+  getCart: mockGetCart,
+  clearCart: mockClearCart,
+  removeItem: mockRemoveItem,
+  updateQuantity: mockUpdateQuantity,
+  getCartById: mockGetCartById,
+  buyNow: mockBuyNow,
 }));
 
 const mockAuthenticateUser = jest.fn();
 
-jest.unstable_mockModule('../middleware/auth.middleware.js', () => ({
-    authenticateUser: mockAuthenticateUser,
+jest.unstable_mockModule("../middleware/auth.middleware.js", () => ({
+  authenticateUser: mockAuthenticateUser,
 }));
 
-// Import the router file after the mocks have been defined.
-// This will execute the file and set up the routes on our mock router.
-await import('./cart.routes.js');
+let routeStack;
 
-describe('Cart Routes', () => {
-    it('should configure the GET /:cartId route', () => {
-        expect(mockGet).toHaveBeenCalledWith('/:cartId', mockAuthenticateUser, mockGetCartById);
-    });
+beforeAll(async () => {
+  const mod = await import("../routes/cart.routes.js");
+  routeStack = mod.default.stack;
+});
 
-    it('should configure the POST /add route', () => {
-        expect(mockPost).toHaveBeenCalledWith('/add', mockAuthenticateUser, mockAddToCart);
-    });
+describe("Cart Routes", () => {
+  it("has 7 routes registered", () => {
+    expect(routeStack).toHaveLength(7);
+  });
 
-    it('should configure the PUT /update/:productId route', () => {
-        expect(mockPut).toHaveBeenCalledWith('/update/:productId', mockAuthenticateUser, mockUpdateQuantity);
-    });
+  it("registers GET /:cartId with authenticateUser and getCartById", () => {
+    const layer = routeStack[0];
+    expect(layer.route.methods).toMatchObject({ get: true });
+    expect(layer.route.path).toBe("/:cartId");
+    expect(layer.route.stack.some(l => l.handle === mockGetCartById)).toBe(true);
+  });
 
-    it('should configure the DELETE /remove/:productId route', () => {
-        expect(mockDelete).toHaveBeenCalledWith('/remove/:productId', mockAuthenticateUser, mockRemoveItem);
-    });
+  it("registers POST /add with authenticateUser and addToCart", () => {
+    const layer = routeStack[1];
+    expect(layer.route.methods).toMatchObject({ post: true });
+    expect(layer.route.path).toBe("/add");
+    expect(layer.route.stack.some(l => l.handle === mockAddToCart)).toBe(true);
+  });
 
-    it('should configure the GET / route', () => {
-        expect(mockGet).toHaveBeenCalledWith('/', mockAuthenticateUser, mockGetCart);
-    });
+  it("registers PUT /update/:productId with authenticateUser and updateQuantity", () => {
+    const layer = routeStack[2];
+    expect(layer.route.methods).toMatchObject({ put: true });
+    expect(layer.route.path).toBe("/update/:productId");
+    expect(layer.route.stack.some(l => l.handle === mockUpdateQuantity)).toBe(true);
+  });
 
-    it('should configure the DELETE /clear route', () => {
-        expect(mockDelete).toHaveBeenCalledWith('/clear', mockAuthenticateUser, mockClearCart);
-    });
+  it("registers DELETE /remove/:productId with authenticateUser and removeItem", () => {
+    const layer = routeStack[3];
+    expect(layer.route.methods).toMatchObject({ delete: true });
+    expect(layer.route.path).toBe("/remove/:productId");
+    expect(layer.route.stack.some(l => l.handle === mockRemoveItem)).toBe(true);
+  });
+
+  it("registers GET / with authenticateUser and getCart", () => {
+    const layer = routeStack[4];
+    expect(layer.route.methods).toMatchObject({ get: true });
+    expect(layer.route.path).toBe("/");
+    expect(layer.route.stack.some(l => l.handle === mockGetCart)).toBe(true);
+  });
+
+  it("registers DELETE /clear with authenticateUser and clearCart", () => {
+    const layer = routeStack[5];
+    expect(layer.route.methods).toMatchObject({ delete: true });
+    expect(layer.route.path).toBe("/clear");
+    expect(layer.route.stack.some(l => l.handle === mockClearCart)).toBe(true);
+  });
+
+  it("registers POST /buy-now with authenticateUser and buyNow", () => {
+    const layer = routeStack[6];
+    expect(layer.route.methods).toMatchObject({ post: true });
+    expect(layer.route.path).toBe("/buy-now");
+    expect(layer.route.stack.some(l => l.handle === mockBuyNow)).toBe(true);
+  });
+
+  it("uses authenticateUser middleware on all routes", () => {
+    for (const layer of routeStack) {
+      const handlers = layer.route.stack.map(l => l.handle);
+      expect(handlers).toContain(mockAuthenticateUser);
+    }
+  });
 });

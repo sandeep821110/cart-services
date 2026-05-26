@@ -1,196 +1,181 @@
-import { jest } from '@jest/globals';
+import { jest } from "@jest/globals";
 
 const mockJwtVerify = jest.fn();
-const mockRefreshAccessToken = jest.fn();
 
-jest.unstable_mockModule('jsonwebtoken', () => ({
+jest.unstable_mockModule("jsonwebtoken", () => ({
   default: { verify: mockJwtVerify },
   verify: mockJwtVerify,
 }));
 
-jest.unstable_mockModule('../utils/tokenRefresher.js', () => ({
-  refreshAccessToken: mockRefreshAccessToken,
+jest.unstable_mockModule("../utils/logger.js", () => ({
+  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 
-const { authenticateUser } = await import('./auth.middleware.js');
+const { authenticateUser } = await import("./auth.middleware.js");
 
-describe('Auth Middleware', () => {
+const SECRET = "test-secret-jwt";
+
+describe("authenticateUser middleware", () => {
   let req, res, next;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    req = {
-      headers: {},
-      cookies: {},
-    };
-    res = {
-      status: jest.fn().mockReturnThis(),
-      json: jest.fn(),
-      cookie: jest.fn(),
-      setHeader: jest.fn(),
-    };
+    req = { headers: {}, cookies: {} };
+    res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
     next = jest.fn();
-    process.env.JWT_SECRET = 'test-secret';
+    process.env.JWT_ACCESS_SECRET = SECRET;
   });
 
-  describe('header-based auth', () => {
-    it('should return 401 if no authorization header is present', async () => {
-      await authenticateUser(req, res, next);
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'No token provided' });
-      expect(next).not.toHaveBeenCalled();
+  const payload = { id: "user123", email: "test@test.com", role: "admin" };
+
+  describe("token from Authorization header", () => {
+    it("calls next with user when Bearer token is valid", () => {
+      req.headers.authorization = `Bearer valid-token`;
+      mockJwtVerify.mockReturnValue(payload);
+
+      authenticateUser(req, res, next);
+
+      expect(mockJwtVerify).toHaveBeenCalledWith("valid-token", SECRET);
+      expect(req.user).toEqual({ id: "user123", email: "test@test.com", role: "admin" });
+      expect(next).toHaveBeenCalled();
     });
 
-    it('should return 401 if authorization header does not start with "Bearer "', async () => {
-      req.headers.authorization = 'Token some-token';
-      await authenticateUser(req, res, next);
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'No token provided' });
-      expect(next).not.toHaveBeenCalled();
-    });
+    it("returns 401 with NO_TOKEN when Authorization header is missing", () => {
+      authenticateUser(req, res, next);
 
-    it('should return 401 if token is invalid', async () => {
-      req.headers.authorization = 'Bearer invalid-token';
-      mockJwtVerify.mockImplementation(() => {
-        throw new Error('Invalid token');
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Authentication required",
+        code: "NO_TOKEN",
       });
-      await authenticateUser(req, res, next);
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'Invalid token' });
       expect(next).not.toHaveBeenCalled();
     });
 
-    it('should call next() and attach user to request if token is valid', async () => {
-      const payload = { id: 'user123' };
-      req.headers.authorization = 'Bearer valid-token';
-      mockJwtVerify.mockReturnValue(payload);
+    it("returns 401 with NO_TOKEN when header does not start with Bearer", () => {
+      req.headers.authorization = "Token some-token";
 
-      await authenticateUser(req, res, next);
+      authenticateUser(req, res, next);
 
-      expect(mockJwtVerify).toHaveBeenCalledWith('valid-token', 'test-secret');
-      expect(req.user).toEqual({ id: 'user123' });
-      expect(next).toHaveBeenCalled();
-      expect(res.status).not.toHaveBeenCalled();
-    });
-
-    it('should normalize user id from payload.userId', async () => {
-      const payload = { userId: 'user456' };
-      req.headers.authorization = 'Bearer valid-token';
-      mockJwtVerify.mockReturnValue(payload);
-
-      await authenticateUser(req, res, next);
-
-      expect(req.user).toEqual({ id: 'user456' });
-      expect(next).toHaveBeenCalled();
-    });
-
-    it('should normalize user id from payload.sub', async () => {
-      const payload = { sub: 'user789' };
-      req.headers.authorization = 'Bearer valid-token';
-      mockJwtVerify.mockReturnValue(payload);
-
-      await authenticateUser(req, res, next);
-
-      expect(req.user).toEqual({ id: 'user789' });
-      expect(next).toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Authentication required",
+        code: "NO_TOKEN",
+      });
     });
   });
 
-  describe('cookie-based auth', () => {
-    it('should authenticate using access_token cookie', async () => {
-      req.cookies.access_token = 'cookie-token';
-      const payload = { id: 'cookie-user' };
+  describe("token from cookie", () => {
+    it("calls next with user when authToken cookie is valid", () => {
+      req.cookies.authToken = "cookie-token";
       mockJwtVerify.mockReturnValue(payload);
 
-      await authenticateUser(req, res, next);
+      authenticateUser(req, res, next);
 
-      expect(mockJwtVerify).toHaveBeenCalledWith('cookie-token', 'test-secret');
-      expect(req.user).toEqual({ id: 'cookie-user' });
+      expect(mockJwtVerify).toHaveBeenCalledWith("cookie-token", SECRET);
+      expect(req.user).toEqual({ id: "user123", email: "test@test.com", role: "admin" });
       expect(next).toHaveBeenCalled();
     });
 
-    it('should return 401 if no token in header or cookie', async () => {
-      delete req.cookies.access_token;
-      await authenticateUser(req, res, next);
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'No token provided' });
+    it("prefers Authorization header over authToken cookie", () => {
+      req.cookies.authToken = "cookie-token";
+      req.headers.authorization = "Bearer header-token";
+      mockJwtVerify.mockReturnValue({ id: "header-user" });
+
+      authenticateUser(req, res, next);
+
+      expect(mockJwtVerify).toHaveBeenCalledWith("header-token", SECRET);
+      expect(req.user.id).toBe("header-user");
     });
   });
 
-  describe('auto-refresh on expired token', () => {
-    it('should refresh token when access token is expired and refresh token is present', async () => {
-      const expiredErr = new Error('jwt expired');
-      expiredErr.name = 'TokenExpiredError';
-      mockJwtVerify.mockImplementationOnce(() => { throw expiredErr; });
-      mockJwtVerify.mockImplementationOnce(() => ({ id: 'refreshed-user' }));
+  describe("response format", () => {
+    it("sets email to null and role to user when not provided", () => {
+      req.headers.authorization = "Bearer t";
+      mockJwtVerify.mockReturnValue({ id: "u1" });
 
-      mockRefreshAccessToken.mockResolvedValue({
-        accessToken: 'new-access-token',
-        refreshToken: 'new-refresh-token',
-      });
+      authenticateUser(req, res, next);
 
-      req.cookies.access_token = 'expired-token';
-      req.cookies.refresh_token = 'valid-refresh-token';
-
-      await authenticateUser(req, res, next);
-
-      expect(mockRefreshAccessToken).toHaveBeenCalledWith('valid-refresh-token');
-      expect(res.cookie).toHaveBeenCalledWith('access_token', 'new-access-token', expect.any(Object));
-      expect(res.cookie).toHaveBeenCalledWith('refresh_token', 'new-refresh-token', expect.any(Object));
-      expect(res.setHeader).toHaveBeenCalledWith('x-new-access-token', 'new-access-token');
-      expect(req.user).toEqual({ id: 'refreshed-user' });
-      expect(next).toHaveBeenCalled();
+      expect(req.user).toEqual({ id: "u1", email: null, role: "user" });
     });
+  });
 
-    it('should use x-refresh-token header if cookie is not available', async () => {
-      const expiredErr = new Error('jwt expired');
-      expiredErr.name = 'TokenExpiredError';
-      mockJwtVerify.mockImplementationOnce(() => { throw expiredErr; });
-      mockJwtVerify.mockImplementationOnce(() => ({ id: 'user' }));
+  describe("error handling", () => {
+    it("returns 401 with INVALID_PAYLOAD when decoded has no id", () => {
+      req.headers.authorization = "Bearer t";
+      mockJwtVerify.mockReturnValue({ email: "no-id" });
 
-      mockRefreshAccessToken.mockResolvedValue({
-        accessToken: 'new-access-token',
-      });
-
-      req.headers.authorization = 'Bearer expired-token';
-      req.headers['x-refresh-token'] = 'header-refresh-token';
-
-      await authenticateUser(req, res, next);
-
-      expect(mockRefreshAccessToken).toHaveBeenCalledWith('header-refresh-token');
-      expect(req.user).toEqual({ id: 'user' });
-      expect(next).toHaveBeenCalled();
-    });
-
-    it('should return 401 if access token expired but no refresh token available', async () => {
-      const expiredErr = new Error('jwt expired');
-      expiredErr.name = 'TokenExpiredError';
-      mockJwtVerify.mockImplementation(() => { throw expiredErr; });
-
-      req.headers.authorization = 'Bearer expired-token';
-
-      await authenticateUser(req, res, next);
+      authenticateUser(req, res, next);
 
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'Token expired, no refresh token' });
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Invalid token payload",
+        code: "INVALID_PAYLOAD",
+      });
       expect(next).not.toHaveBeenCalled();
     });
 
-    it('should return 401 if token refresh fails', async () => {
-      const expiredErr = new Error('jwt expired');
-      expiredErr.name = 'TokenExpiredError';
-      mockJwtVerify.mockImplementationOnce(() => { throw expiredErr; });
+    it("returns 401 with TOKEN_EXPIRED when TokenExpiredError is thrown", () => {
+      req.headers.authorization = "Bearer expired";
+      const err = new Error("jwt expired");
+      err.name = "TokenExpiredError";
+      mockJwtVerify.mockImplementation(() => { throw err; });
 
-      mockRefreshAccessToken.mockRejectedValue(new Error('Refresh failed'));
-
-      req.cookies.access_token = 'expired-token';
-      req.cookies.refresh_token = 'bad-refresh-token';
-
-      await authenticateUser(req, res, next);
+      authenticateUser(req, res, next);
 
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'Token refresh failed' });
-      expect(next).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Token expired",
+        code: "TOKEN_EXPIRED",
+      });
+    });
+
+    it("returns 401 with INVALID_TOKEN when JsonWebTokenError is thrown", () => {
+      req.headers.authorization = "Bearer bad";
+      const err = new Error("invalid token");
+      err.name = "JsonWebTokenError";
+      mockJwtVerify.mockImplementation(() => { throw err; });
+
+      authenticateUser(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Invalid token",
+        code: "INVALID_TOKEN",
+      });
+    });
+
+    it("returns 401 with AUTH_ERROR for unexpected errors", () => {
+      req.headers.authorization = "Bearer t";
+      mockJwtVerify.mockImplementation(() => { throw new Error("Unknown"); });
+
+      authenticateUser(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        message: "Authentication failed",
+        code: "AUTH_ERROR",
+      });
+    });
+  });
+
+  describe("JWT_ACCESS_SECRET fallback", () => {
+    it("uses JWT_SECRET when JWT_ACCESS_SECRET is not set", () => {
+      delete process.env.JWT_ACCESS_SECRET;
+      process.env.JWT_SECRET = "fallback";
+      req.headers.authorization = "Bearer t";
+      mockJwtVerify.mockReturnValue({ id: "u1" });
+
+      authenticateUser(req, res, next);
+
+      expect(mockJwtVerify).toHaveBeenCalledWith("t", "fallback");
+      expect(req.user.id).toBe("u1");
+      process.env.JWT_ACCESS_SECRET = SECRET;
     });
   });
 });
