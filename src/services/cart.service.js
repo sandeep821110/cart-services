@@ -224,15 +224,16 @@ export const removeItemById = async (userId, cartItemId) => {
 
 const fetchProduct = async (productId) => {
   if (!productId) throw new Error("productId is required");
-  try {
-    const res = await axios.get(`${PRODUCT_URL}/api/products/${productId}`, { timeout: 5000 });
-    // support responses like { data: product } or { data: { data: product } }
-    const product = res.data?.data ?? res.data;
-    if (!product) throw new Error(`Product ${productId} not found`);
-    return product;
-  } catch (err) {
-    if (err.response && err.response.status === 404) throw new Error(`Product ${productId} not found`);
-    if (err.code === "ECONNABORTED" || err.request) throw new Error("Product service is unavailable");
-    throw err;
+  const urls = [PRODUCT_URL].filter(Boolean);
+  const uniqueUrls = [...new Set(urls)];
+  for (const baseUrl of uniqueUrls) {
+    try {
+      const res = await axios.get(`${baseUrl}/api/products/${productId}`, { timeout: 5000 });
+      const product = res.data?.data ?? res.data;
+      if (product) return product;
+    } catch (err) {
+      if (err.response && err.response.status === 404) throw new Error(`Product ${productId} not found`);
+    }
   }
+  throw new Error("Product service is unavailable");
 };

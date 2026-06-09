@@ -1,0 +1,71 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: cart-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - cart-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: cart-redis
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cart-network
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: cart-rabbitmq
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - cart-network
+    restart: unless-stopped
+
+  cart-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cart-service
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: 8001
+      MONGO_URI: mongodb://root:password@mongodb:27017/cart-db?authSource=admin
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      - "8001:8001"
+    depends_on:
+      - mongodb
+      - redis
+      - rabbitmq
+    networks:
+      - cart-network
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  cart-network:
+    driver: bridge

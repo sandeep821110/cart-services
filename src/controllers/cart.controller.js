@@ -10,10 +10,10 @@ import mongoose from 'mongoose';
 export const addToCart = async (req, res) => {
   try {
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const { productId, size, quantity = 1, ...rest } = req.body;
-    if (!productId) return res.status(400).json({ success: false, error: 'productId required' });
+    if (!productId) return res.status(400).json({ success: false, message: 'productId required' });
 
     let product;
     if (typeof cartService.getProductById === 'function') {
@@ -23,21 +23,27 @@ export const addToCart = async (req, res) => {
       product = await cartService.fetchProduct(productId);
     }
     if (!product) {
-      const base = (process.env.PRODUCT_SERVICE_URL || 'http://localhost:3000').replace(/\/$/, '');
+      const bases = [
+        (process.env.PRODUCT_SERVICE_URL || 'http://localhost:4001').replace(/\/$/, ''),
+      ];
+      const uniqueBases = [...new Set(bases)];
       const headers = {};
       if (req.headers?.authorization) headers.Authorization = req.headers.authorization;
 
       const tryPaths = [`/products/${productId}`, `/api/products/${productId}`, `/product/${productId}`];
-      for (const p of tryPaths) {
-        try {
-          const resp = await axios.get(`${base}${p}`, { headers, timeout: 5000 });
-          if (resp?.data) {
-            product = resp.data.product ?? resp.data.data ?? resp.data;
-            if (product && product.data) product = product.data;
-            if (Array.isArray(product) && product.length) product = product[0];
+      for (const base of uniqueBases) {
+        for (const p of tryPaths) {
+          try {
+            const resp = await axios.get(`${base}${p}`, { headers, timeout: 5000 });
+            if (resp?.data) {
+              product = resp.data.product ?? resp.data.data ?? resp.data;
+              if (product && product.data) product = product.data;
+              if (Array.isArray(product) && product.length) product = product[0];
+            }
+          } catch (err) {
+            logger.debug(`fetch product failed for ${base}${p}: ${err.message}`);
           }
-        } catch (err) {
-          logger.debug(`fetch product failed for ${p}: ${err.message}`);
+          if (product) break;
         }
         if (product) break;
       }
@@ -45,7 +51,7 @@ export const addToCart = async (req, res) => {
 
     if (!product) {
       logger.error('Product not found when fetching productId', { productId, PRODUCT_SERVICE_URL: process.env.PRODUCT_SERVICE_URL });
-      return res.status(400).json({ success: false, error: 'Product not found' });
+      return res.status(400).json({ success: false, message: 'Product not found' });
     }
 
     // normalize product fields
@@ -63,7 +69,7 @@ export const addToCart = async (req, res) => {
     };
 
     if (!itemObj.name || itemObj.price == null) {
-      return res.status(400).json({ success: false, error: 'Product missing required fields (name or price)' });
+      return res.status(400).json({ success: false, message: 'Product missing required fields (name or price)' });
     }
 
     let cart = await Cart.findOne({ userId });
@@ -93,7 +99,7 @@ export const addToCart = async (req, res) => {
     return res.status(200).json({ success: true, data: cart });
   } catch (err) {
     logger.error('addToCart error', { message: err.message, stack: err.stack });
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -130,7 +136,7 @@ export const removeFromCart = async (req, res) => {
     await cart.save();
     return res.status(200).json({ message: 'Item removed', cart });
   } catch (err) {
-    return res.status(500).json({ message: 'Server error', error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -165,7 +171,7 @@ export const removeItem = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Item removed', cart });
   } catch (error) {
     logger.error(`Error removing item: ${error.message}`, { stack: error.stack });
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -217,7 +223,7 @@ export const updateCartItem = async (req, res) => {
     });
   } catch (error) {
     logger.error(`Error updating cart: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -267,7 +273,7 @@ export const updateQuantity = async (req, res) => {
     });
   } catch (error) {
     logger.error(`Error updating quantity: ${error.message}`, { stack: error.stack });
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -289,7 +295,7 @@ export const clearCart = async (req, res) => {
     await cart.save();
     return res.status(200).json({ message: 'Cart cleared', cart });
   } catch (err) {
-    return res.status(500).json({ message: 'Server error', error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -299,11 +305,11 @@ export const clearCart = async (req, res) => {
 export const getCart = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?._id;
-    if (!userId) return res.status(400).json({ success: false, error: 'userId missing' });
+    if (!userId) return res.status(400).json({ success: false, message: 'userId missing' });
     const cart = await Cart.findOne({ userId });
     return res.json({ success: true, data: cart });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -313,21 +319,21 @@ export const getCart = async (req, res) => {
 export const getCartById = async (req, res) => {
   try {
     const { cartId } = req.params;
-    if (!cartId) return res.status(400).json({ success: false, error: 'cartId is required' });
+    if (!cartId) return res.status(400).json({ success: false, message: 'cartId is required' });
 
     const cart = await Cart.findById(cartId);
-    if (!cart) return res.status(404).json({ success: false, error: 'Cart not found' });
+    if (!cart) return res.status(404).json({ success: false, message: 'Cart not found' });
 
     // if authenticated, ensure the requester owns the cart
     const userId = req.user?.id || req.user?._id;
     if (userId && cart.userId && cart.userId.toString() !== userId.toString()) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
+      return res.status(403).json({ success: false, message: 'Forbidden' });
     }
 
     return res.status(200).json({ success: true, data: cart });
   } catch (err) {
     logger.error('getCartById error', { message: err.message, stack: err.stack });
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -337,11 +343,11 @@ export const getCartById = async (req, res) => {
 export const buyNow = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?._id;
-    if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const { items, address } = req.body;
     if (!items || !items.length) {
-      return res.status(400).json({ success: false, error: 'No items in checkout' });
+      return res.status(400).json({ success: false, message: 'No items in checkout' });
     }
 
     const orderServiceUrl = process.env.ORDER_SERVICE_URL || 'http://localhost:7000';
@@ -370,9 +376,9 @@ export const buyNow = async (req, res) => {
     if (error.response) {
       return res.status(error.response.status).json({
         success: false,
-        error: error.response.data?.message || error.response.data?.error || 'Order service error',
+        message: error.response.data?.message || error.response.data?.error || 'Order service error',
       });
     }
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

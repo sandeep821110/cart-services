@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cart-services
+  namespace: choosemood
+  labels:
+    app: cart-services
+    service: backend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: cart-services
+  template:
+    metadata:
+      labels:
+        app: cart-services
+    spec:
+      containers:
+        - name: cart-services
+          image: your-registry.azurecr.io/cart-services:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "8001"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: choosemood-secrets
+                  key: JWT_SECRET
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: choosemood-secrets
+                  key: MONGO_URI_CART
+            - name: RABBITMQ_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: choosemood-config
+                  key: RABBITMQ_URL
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: choosemood-config
+                  key: REDIS_URL
+            - name: PRODUCT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: choosemood-config
+                  key: PRODUCT_SERVICE_URL
+            - name: AUTH_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: choosemood-config
+                  key: AUTH_SERVICE_URL
+            - name: ORDER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: choosemood-config
+                  key: ORDER_SERVICE_URL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
