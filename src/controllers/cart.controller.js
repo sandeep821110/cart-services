@@ -1,8 +1,6 @@
 import Cart from '../models/cart.model.js';
 import logger from '../utils/logger.js';
-import * as cartService from "../services/cart.service.js";
 import axios from 'axios';
-import mongoose from 'mongoose';
 
 /**
  * Add item to cart with proper image and _id storage
@@ -16,12 +14,6 @@ export const addToCart = async (req, res) => {
     if (!productId) return res.status(400).json({ success: false, message: 'productId required' });
 
     let product;
-    if (typeof cartService.getProductById === 'function') {
-      product = await cartService.getProductById(productId);
-    }
-    if (!product && typeof cartService.fetchProduct === 'function') {
-      product = await cartService.fetchProduct(productId);
-    }
     if (!product) {
       const bases = [
         (process.env.PRODUCT_SERVICE_URL || 'http://localhost:4001').replace(/\/$/, ''),
@@ -355,7 +347,9 @@ export const buyNow = async (req, res) => {
 
     const orderPayload = {
       items: items.map(item => ({
-        product: item.productId,
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
         quantity: item.quantity,
         size: item.size,
       })),

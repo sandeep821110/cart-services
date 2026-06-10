@@ -28,7 +28,10 @@ export const connectRabbitMQ = async () => {
     return { channel, connection };
   } catch (err) {
     logger.error("Failed to connect to RabbitMQ:", err.message);
-    process.exit(1);
+    logger.warn("Continuing without RabbitMQ — events will not be published");
+    channel = null;
+    connection = null;
+    return { channel: null, connection: null };
   }
 };
 
