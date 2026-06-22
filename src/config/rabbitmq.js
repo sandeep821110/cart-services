@@ -3,6 +3,30 @@ import logger from "../utils/logger.js";
 
 let channel;
 let connection;
+let isConnected = false;
+
+export const isRabbitMQConnected = () => isConnected && channel !== null;
+
+export const getRabbitMQStatus = () => ({
+  connected: isConnected,
+  available: isRabbitMQConnected(),
+  hasConnection: connection !== null,
+  hasChannel: channel !== null,
+});
+
+export const checkRabbitMQHealth = async () => {
+  if (!isRabbitMQConnected()) {
+    return { status: "disconnected", message: "RabbitMQ not connected", connected: false };
+  }
+  try {
+    const healthQueue = `health-check-${Date.now()}`;
+    await channel.assertQueue(healthQueue, { exclusive: true });
+    await channel.deleteQueue(healthQueue);
+    return { status: "healthy", message: "RabbitMQ is operational", connected: true };
+  } catch (error) {
+    return { status: "unhealthy", message: error.message, connected: isConnected };
+  }
+};
 
 export const connectRabbitMQ = async () => {
   try {
@@ -15,18 +39,22 @@ export const connectRabbitMQ = async () => {
 
     await channel.assertQueue("cartQueue", { durable: true });
 
+    isConnected = true;
     logger.info("RabbitMQ connected and queue asserted");
 
     connection.on("error", (err) => {
+      isConnected = false;
       logger.error("RabbitMQ connection error:", err.message);
     });
 
     connection.on("close", () => {
+      isConnected = false;
       logger.warn("RabbitMQ connection closed");
     });
 
     return { channel, connection };
   } catch (err) {
+    isConnected = false;
     logger.error("Failed to connect to RabbitMQ:", err.message);
     logger.warn("Continuing without RabbitMQ — events will not be published");
     channel = null;
