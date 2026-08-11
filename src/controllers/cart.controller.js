@@ -5,64 +5,70 @@ import axios from 'axios';
 /**
  * Add item to cart with proper image and _id storage
  */
+const getProductBaseUrl = () =>
+  (process.env.PRODUCT_SERVICE_URL || "http://localhost:5001").replace(/\/$/, "");
+
+const fetchProduct = async (productId, authHeader) => {
+  const headers = {};
+  if (authHeader) headers.Authorization = authHeader;
+  const tryPaths = [`/products/${productId}`, `/api/products/${productId}`, `/product/${productId}`];
+  for (const p of tryPaths) {
+    try {
+      const resp = await axios.get(`${getProductBaseUrl()}${p}`, { headers, timeout: 5000 });
+      if (resp?.data) {
+        let product = resp.data.product ?? resp.data.data ?? resp.data;
+        if (product?.data) product = product.data;
+        if (Array.isArray(product) && product.length) product = product[0];
+        if (product && (product._id || product.id)) return product;
+      }
+    } catch (err) {
+      logger.debug(`fetch product failed for ${p}: ${err.message}`);
+    }
+  }
+  return null;
+};
+
 export const addToCart = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const { productId, size, quantity = 1, ...rest } = req.body;
+    const { productId, size, quantity = 1 } = req.body;
     if (!productId) return res.status(400).json({ success: false, message: 'productId required' });
 
-    let product;
-    if (!product) {
-      const bases = [
-        (process.env.PRODUCT_SERVICE_URL || 'http://localhost:4001').replace(/\/$/, ''),
-      ];
-      const uniqueBases = [...new Set(bases)];
-      const headers = {};
-      if (req.headers?.authorization) headers.Authorization = req.headers.authorization;
-
-      const tryPaths = [`/products/${productId}`, `/api/products/${productId}`, `/product/${productId}`];
-      for (const base of uniqueBases) {
-        for (const p of tryPaths) {
-          try {
-            const resp = await axios.get(`${base}${p}`, { headers, timeout: 5000 });
-            if (resp?.data) {
-              product = resp.data.product ?? resp.data.data ?? resp.data;
-              if (product && product.data) product = product.data;
-              if (Array.isArray(product) && product.length) product = product[0];
-            }
-          } catch (err) {
-            logger.debug(`fetch product failed for ${base}${p}: ${err.message}`);
-          }
-          if (product) break;
-        }
-        if (product) break;
-      }
+    const qty = parseInt(quantity, 10);
+    if (isNaN(qty) || qty <= 0) {
+      return res.status(400).json({ success: false, message: 'Quantity must be a positive number' });
     }
 
+    const product = await fetchProduct(productId, req.headers?.authorization);
     if (!product) {
       logger.error('Product not found when fetching productId', { productId, PRODUCT_SERVICE_URL: process.env.PRODUCT_SERVICE_URL });
       return res.status(400).json({ success: false, message: 'Product not found' });
     }
 
-    // normalize product fields
-    if (product?.data) product = product.data;
-    if (Array.isArray(product) && product.length) product = product[0];
+    const price = product.discountPrice ?? product.price ?? product.unitPrice;
+    const name = product.name || product.title;
 
-    const itemObj = {
-      productId: product._id?.toString?.() ?? productId,
-      size,
-      quantity: parseInt(quantity, 10) || 1,
-      name: product.name || product.title || rest.name,
-      price: product.discountPrice ?? product.price ?? product.unitPrice ?? rest.price,
-      image: product.image || product.images?.[0] || rest.image,
-      ...rest
-    };
-
-    if (!itemObj.name || itemObj.price == null) {
+    if (!name || price == null) {
       return res.status(400).json({ success: false, message: 'Product missing required fields (name or price)' });
     }
+
+    const image =
+      Array.isArray(product.images) && product.images.length
+        ? [product.images[0]]
+        : product.image
+          ? [product.image]
+          : [];
+
+    const itemObj = {
+      productId: product._id?.toString?.() ?? product.id?.toString?.() ?? productId,
+      size: size || '',
+      quantity: qty,
+      name,
+      price,
+      image,
+    };
 
     let cart = await Cart.findOne({ userId });
     if (!cart) {
@@ -82,7 +88,7 @@ export const addToCart = async (req, res) => {
       existing.quantity = (existing.quantity || 0) + itemObj.quantity;
       existing.price = itemObj.price;
       existing.name = itemObj.name;
-      existing.image = existing.image || itemObj.image;
+      existing.image = existing.image?.length ? existing.image : itemObj.image;
     } else {
       cart.items.push(itemObj);
     }
@@ -137,7 +143,7 @@ export const removeFromCart = async (req, res) => {
  */
 export const removeItem = async (req, res) => {
   try {
-    const userId = req.userId || req.user?.id || req.user?._id || req.user?.sub || req.headers["x-user-id"];
+    const userId = req.user?.id;
     const { productId } = req.params;
     const { size } = req.body;
 
@@ -224,7 +230,7 @@ export const updateCartItem = async (req, res) => {
  */
 export const updateQuantity = async (req, res) => {
   try {
-    const userId = req.userId || req.user?.id || req.user?._id || req.user?.sub || req.headers["x-user-id"];
+    const userId = req.user?.id;
     const { productId } = req.params;
     const { quantity, size } = req.body;
     const qty = parseInt(quantity, 10);
@@ -334,25 +340,52 @@ export const getCartById = async (req, res) => {
  */
 export const buyNow = async (req, res) => {
   try {
-    const userId = req.user?.id || req.user?._id;
+    const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const { items, address } = req.body;
     if (!items || !items.length) {
       return res.status(400).json({ success: false, message: 'No items in checkout' });
     }
+    if (!address || typeof address !== "object") {
+      return res.status(400).json({ success: false, message: 'Shipping address is required' });
+    }
+
+    const orderItems = [];
+    for (const item of items) {
+      if (!item?.productId) {
+        return res.status(400).json({ success: false, message: 'productId is required for each item' });
+      }
+      const qty = parseInt(item.quantity, 10);
+      if (isNaN(qty) || qty <= 0) {
+        return res.status(400).json({ success: false, message: 'Quantity must be a positive number' });
+      }
+
+      const product = await fetchProduct(item.productId, req.headers?.authorization);
+      if (!product) {
+        return res.status(400).json({ success: false, message: `Product ${item.productId} not found` });
+      }
+
+      const price = product.discountPrice ?? product.price ?? product.unitPrice;
+      const name = product.name || product.title;
+      if (price == null || !name) {
+        return res.status(400).json({ success: false, message: `Product ${item.productId} missing required fields` });
+      }
+
+      orderItems.push({
+        productId: product._id?.toString?.() ?? product.id?.toString?.() ?? item.productId,
+        name,
+        price,
+        quantity: qty,
+        size: item.size || '',
+      });
+    }
 
     const orderServiceUrl = process.env.ORDER_SERVICE_URL || 'http://localhost:7000';
     const headers = { Authorization: req.headers.authorization || '', 'Content-Type': 'application/json' };
 
     const orderPayload = {
-      items: items.map(item => ({
-        productId: item.productId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-        size: item.size,
-      })),
+      items: orderItems,
       shippingAddress: address,
       paymentMethod: 'pending',
     };

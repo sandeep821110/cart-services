@@ -1,18 +1,11 @@
 import { jest } from "@jest/globals";
 
 const mockCartModel = jest.fn();
-const mockGetProductById = jest.fn();
-const mockFetchProduct = jest.fn();
 const mockAxiosGet = jest.fn();
 const mockAxiosPost = jest.fn();
 
 jest.unstable_mockModule("../models/cart.model.js", () => ({
   default: mockCartModel,
-}));
-
-jest.unstable_mockModule("../services/cart.service.js", () => ({
-  getProductById: mockGetProductById,
-  fetchProduct: mockFetchProduct,
 }));
 
 jest.unstable_mockModule("axios", () => ({
@@ -44,6 +37,16 @@ const {
 } = await import("./cart.controller.js");
 const Cart = (await import("../models/cart.model.js")).default;
 
+const productResponse = (product) => ({ data: { product } });
+
+const product = {
+  _id: "prod123",
+  name: "Test Product",
+  price: 100,
+  discountPrice: 80,
+  images: ["img1.jpg"],
+};
+
 describe("Cart Controller", () => {
   let req, res;
 
@@ -52,6 +55,7 @@ describe("Cart Controller", () => {
     Cart.findOne = jest.fn();
     Cart.findById = jest.fn();
     Cart.create = jest.fn();
+    mockAxiosGet.mockResolvedValue(productResponse(product));
 
     req = {
       user: { id: "user123" },
@@ -66,36 +70,59 @@ describe("Cart Controller", () => {
   });
 
   describe("addToCart", () => {
-    const product = { _id: "prod123", name: "Test Product", price: 100 };
-
     beforeEach(() => {
       req.body = { productId: "prod123", quantity: 1 };
-      mockGetProductById.mockResolvedValue(null);
-      mockFetchProduct.mockResolvedValue(product);
     });
 
     it("returns 401 if user is not authenticated", async () => {
       req.user = null;
       await addToCart(req, res);
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Unauthorized" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Unauthorized" });
     });
 
     it("returns 400 if productId is not provided", async () => {
       req.body.productId = undefined;
       await addToCart(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "productId required" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "productId required" });
     });
 
     it("returns 400 if product is not found", async () => {
-      mockGetProductById.mockResolvedValue(null);
-      mockFetchProduct.mockResolvedValue(null);
+      mockAxiosGet.mockResolvedValue({ data: { product: null } });
 
       await addToCart(req, res);
 
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Product not found" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Product not found" });
+    });
+
+    it("does not trust client-supplied price or extra fields", async () => {
+      req.body = { productId: "prod123", quantity: 1, price: 0.01, name: "Hacked", evilField: "x" };
+
+      const mockCart = {
+        userId: "user123",
+        items: [],
+        save: jest.fn().mockResolvedValue(true),
+      };
+      mockCart.items.find = jest.fn().mockReturnValue(undefined);
+      mockCart.items.push = jest.fn();
+      Cart.findOne.mockResolvedValue(mockCart);
+
+      await addToCart(req, res);
+
+      expect(mockCart.items.push).toHaveBeenCalledWith(
+        expect.objectContaining({
+          productId: "prod123",
+          name: "Test Product",
+          price: 80,
+          quantity: 1,
+        })
+      );
+      expect(mockCart.items.push).toHaveBeenCalledWith(
+        expect.not.objectContaining({ price: 0.01, name: "Hacked", evilField: "x" })
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it("creates a new cart if one does not exist", async () => {
@@ -132,7 +159,7 @@ describe("Cart Controller", () => {
     });
 
     it("updates quantity of an existing item", async () => {
-      const existingItem = { productId: "prod123", quantity: 1, price: 100, name: "Test Product" };
+      const existingItem = { productId: "prod123", quantity: 1, price: 80, name: "Test Product" };
       const mockCart = {
         userId: "user123",
         items: [existingItem],
@@ -156,7 +183,7 @@ describe("Cart Controller", () => {
       await addToCart(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "DB error" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "DB error" });
     });
   });
 
@@ -167,10 +194,22 @@ describe("Cart Controller", () => {
 
     it("returns 401 if user ID is missing", async () => {
       req.user = null;
-      req.headers = {};
       await removeItem(req, res);
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith({ success: false, message: "User ID missing" });
+    });
+
+    it("does not trust the x-user-id header", async () => {
+      req.headers["x-user-id"] = "victim-user";
+      req.user = { id: "attacker-user" };
+      const mockCart = { userId: "attacker-user", items: [], save: jest.fn() };
+      Cart.findOne.mockResolvedValue(mockCart);
+      mockCart.items.findIndex = jest.fn().mockReturnValue(-1);
+
+      await removeItem(req, res);
+
+      expect(Cart.findOne).toHaveBeenCalledWith({ userId: "attacker-user" });
+      expect(Cart.findOne).not.toHaveBeenCalledWith({ userId: "victim-user" });
     });
 
     it("returns 404 if cart is not found", async () => {
@@ -243,17 +282,12 @@ describe("Cart Controller", () => {
     it("removes item from cart", async () => {
       const mockCart = {
         userId: "user123",
-        items: [{ _id: "itemId1", productId: "p1" }, { _id: "itemId2", productId: "p2" }],
+        items: [
+          { _id: "itemId1", productId: "p1" },
+          { _id: "itemId2", productId: "p2" },
+        ],
         save: jest.fn().mockResolvedValue(true),
-        items: {
-          id: undefined,
-        },
       };
-      // Simulate array lookup without mongoose subdoc
-      mockCart.items = [
-        { _id: "itemId1", productId: "p1" },
-        { _id: "itemId2", productId: "p2" },
-      ];
       Cart.findOne.mockResolvedValue(mockCart);
 
       await removeFromCart(req, res);
@@ -307,6 +341,19 @@ describe("Cart Controller", () => {
       req.user = null;
       await updateQuantity(req, res);
       expect(res.status).toHaveBeenCalledWith(401);
+    });
+
+    it("does not trust the x-user-id header", async () => {
+      req.headers["x-user-id"] = "victim-user";
+      req.user = { id: "attacker-user" };
+      const mockCart = { userId: "attacker-user", items: [], save: jest.fn() };
+      Cart.findOne.mockResolvedValue(mockCart);
+      mockCart.items.find = jest.fn().mockReturnValue(undefined);
+
+      await updateQuantity(req, res);
+
+      expect(Cart.findOne).toHaveBeenCalledWith({ userId: "attacker-user" });
+      expect(Cart.findOne).not.toHaveBeenCalledWith({ userId: "victim-user" });
     });
 
     it("returns 404 if cart not found", async () => {
@@ -451,7 +498,7 @@ describe("Cart Controller", () => {
       req.user = null;
       await getCart(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "userId missing" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "userId missing" });
     });
 
     it("handles errors gracefully", async () => {
@@ -472,25 +519,14 @@ describe("Cart Controller", () => {
       req.params = {};
       await getCartById(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "cartId is required" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "cartId is required" });
     });
 
     it("returns 404 if cart not found", async () => {
       Cart.findById.mockResolvedValue(null);
       await getCartById(req, res);
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Cart not found" });
-    });
-
-    it("returns cart for unauthenticated user", async () => {
-      req.user = null;
-      const mockCart = { _id: "cart123", userId: "someone" };
-      Cart.findById.mockResolvedValue(mockCart);
-
-      await getCartById(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({ success: true, data: mockCart });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Cart not found" });
     });
 
     it("returns 403 if authenticated user does not own the cart", async () => {
@@ -498,7 +534,7 @@ describe("Cart Controller", () => {
       Cart.findById.mockResolvedValue(mockCart);
       await getCartById(req, res);
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Forbidden" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Forbidden" });
     });
 
     it("returns cart if authenticated user owns it", async () => {
@@ -531,40 +567,68 @@ describe("Cart Controller", () => {
       req.user = null;
       await buyNow(req, res);
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Unauthorized" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Unauthorized" });
     });
 
     it("returns 400 if no items provided", async () => {
       req.body = { items: [] };
       await buyNow(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "No items in checkout" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "No items in checkout" });
     });
 
-    it("creates order via order service and returns it", async () => {
+    it("returns 400 if shipping address is missing", async () => {
+      req.body = { items: [{ productId: "p1", quantity: 1 }] };
+      await buyNow(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Shipping address is required" });
+    });
+
+    it("returns 400 if a product cannot be found", async () => {
+      mockAxiosGet.mockResolvedValue({ data: { product: null } });
+      await buyNow(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Product p1 not found" });
+    });
+
+    it("creates order via order service using server-side prices", async () => {
       const order = { _id: "order123", status: "pending" };
       mockAxiosPost.mockResolvedValue({ data: { order } });
       req.headers.authorization = "Bearer token";
 
       await buyNow(req, res);
 
-      expect(mockAxiosPost).toHaveBeenCalledWith(
-        expect.stringContaining("/api/orders"),
-        expect.objectContaining({
-          items: expect.arrayContaining([
-            expect.objectContaining({ product: "p1", quantity: 1, size: "M" }),
-          ]),
-        }),
-        expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: "Bearer token" }),
-        }),
-      );
+      const postCall = mockAxiosPost.mock.calls[0];
+      expect(postCall[0]).toContain("/api/orders");
+      const payload = postCall[1];
+      expect(payload.items[0]).toMatchObject({
+        productId: "prod123",
+        name: "Test Product",
+        price: 80,
+        quantity: 1,
+        size: "M",
+      });
+      expect(payload.shippingAddress).toEqual({ line1: "123 Main St" });
+      expect(postCall[2].headers.Authorization).toBe("Bearer token");
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: "Order created successfully",
         order,
       });
+    });
+
+    it("ignores client-supplied lower prices in the order payload", async () => {
+      req.body = {
+        items: [{ productId: "p1", quantity: 1, price: 0.01 }],
+        address: { line1: "123 Main St" },
+      };
+      mockAxiosPost.mockResolvedValue({ data: { order: {} } });
+
+      await buyNow(req, res);
+
+      const payload = mockAxiosPost.mock.calls[0][1];
+      expect(payload.items[0].price).toBe(80);
     });
 
     it("handles order service error response", async () => {
@@ -577,7 +641,7 @@ describe("Cart Controller", () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: "Invalid address",
+        message: "Invalid address",
       });
     });
 
@@ -587,7 +651,7 @@ describe("Cart Controller", () => {
       await buyNow(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ success: false, error: "Service unreachable" });
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Service unreachable" });
     });
   });
 });
